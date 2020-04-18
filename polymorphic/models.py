@@ -91,8 +91,12 @@ class PolymorphicModel(with_metaclass(PolymorphicModelBase, models.Model)):
         using = kwargs.get("using", self._state.db or DEFAULT_DB_ALIAS)
         self.pre_save_polymorphic(using=using)    
         if kwargs.get('pk'):
-            kwargs.pop('pk')        
-        return super(PolymorphicModel, self).save(*args, **kwargs)
+            kwargs.pop('pk')
+        try:                    
+            return super(PolymorphicModel, self).save(*args, **kwargs)
+        except:
+            print("kwargs... ", kwargs)
+            print("args... ", args)
 
     save.alters_data = True
 
