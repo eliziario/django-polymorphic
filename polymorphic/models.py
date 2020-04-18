@@ -89,7 +89,9 @@ class PolymorphicModel(with_metaclass(PolymorphicModelBase, models.Model)):
     def save(self, *args, **kwargs):
         """Calls :meth:`pre_save_polymorphic` and saves the model."""
         using = kwargs.get("using", self._state.db or DEFAULT_DB_ALIAS)
-        self.pre_save_polymorphic(using=using)
+        self.pre_save_polymorphic(using=using)    
+        if kwargs.get('pk'):
+            kwargs.pop('pk')        
         return super(PolymorphicModel, self).save(*args, **kwargs)
 
     save.alters_data = True
