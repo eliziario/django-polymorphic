@@ -17,6 +17,7 @@ from polymorphic.compat import with_metaclass
 from .base import PolymorphicModelBase
 from .managers import PolymorphicManager
 from .query_translate import translate_polymorphic_Q_object
+import django
 
 ###################################################################################
 # PolymorphicModel
@@ -85,18 +86,54 @@ class PolymorphicModel(with_metaclass(PolymorphicModelBase, models.Model)):
             ).get_for_model(self, for_concrete_model=False)
 
     pre_save_polymorphic.alters_data = True
+    
+    def _save_table(self, raw=False, cls=None, force_insert=False,
+            force_update=False, using=None, update_fields=None):
+        """
+        Does the heavy-lifting involved in saving. Updates or inserts the data
+        for a single table.
+        """
+        if django.VERSION > (2,9):
+            meta = cls._meta
+            non_pks = [f for f in meta.local_concrete_fields if not f.primary_key]
+
+            if update_fields:
+                non_pks = [f for f in non_pks
+                            if f.name in update_fields or f.attname in update_fields]
+
+            pk_val = self._get_pk_val(meta)
+            if pk_val is None:
+                pk_val = meta.pk.get_pk_value_on_save(self)
+                setattr(self, meta.pk.attname, pk_val)
+            pk_set = pk_val is not None
+            if not pk_set and (force_update or update_fields):
+                raise ValueError("Cannot force an update in save() with no primary key.")
+            updated = False
+            # If possible, try an UPDATE. If that doesn't update anything, do an INSERT.
+            if pk_set and not force_insert:
+                base_qs = cls._base_manager.using(using)
+                values = [(f, None, (getattr(self, f.attname) if raw else f.pre_save(self, False)))
+                            for f in non_pks]
+                forced_update = update_fields or force_update
+                updated = self._do_update(base_qs, using, pk_val, values, update_fields,
+                                            forced_update)
+                if force_update and not updated:
+                    raise DatabaseError("Forced update did not affect any rows.")
+                if update_fields and not updated:
+                    raise DatabaseError("Save with update_fields did not affect any rows.")
+            if not updated:
+                return super(PolymorphicModel, self)._save_table(raw, cls, force_insert,
+                        force_update, using, update_fields)
+            return updated
+        else:
+            return super(PolymorphicModel, self)._save_table(raw, cls, force_insert,
+                        force_update, using, update_fields)
 
     def save(self, *args, **kwargs):
         """Calls :meth:`pre_save_polymorphic` and saves the model."""
-        using = kwargs.get("using", self._state.db or DEFAULT_DB_ALIAS)
-        self.pre_save_polymorphic(using=using)    
-        if kwargs.get('pk'):
-            kwargs.pop('pk')
-        try:                    
-            return super(PolymorphicModel, self).save(*args, **kwargs)
-        except:
-            print("kwargs... ", kwargs)
-            print("args... ", args)
+        using = kwargs.get("using", self._state.db or DEFAULT_DB_ALIAS)        
+        self.pre_save_polymorphic(using=using)            
+        return super(PolymorphicModel, self).save(*args, **kwargs)
 
     save.alters_data = True
 
