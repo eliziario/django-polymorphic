@@ -10,6 +10,7 @@ from django.db.models.fields.related import (
     ForwardManyToOneDescriptor,
     ReverseOneToOneDescriptor,
 )
+from django.db.models.fields import AutoField
 from django.db.utils import DEFAULT_DB_ALIAS
 
 from polymorphic.compat import with_metaclass
@@ -90,8 +91,8 @@ class PolymorphicModel(with_metaclass(PolymorphicModelBase, models.Model)):
     def _save_table(self, raw=False, cls=None, force_insert=False,
             force_update=False, using=None, update_fields=None):
         """
-        Does the heavy-lifting involved in saving. Updates or inserts the data
-        for a single table.
+        Django 3.0 save doesn't check if a pk exists and always insert. Need to emulate the older 
+        behaviour here
         """
         if django.VERSION > (2,9):
             meta = cls._meta
@@ -120,10 +121,30 @@ class PolymorphicModel(with_metaclass(PolymorphicModelBase, models.Model)):
                 if force_update and not updated:
                     raise DatabaseError("Forced update did not affect any rows.")
                 if update_fields and not updated:
-                    raise DatabaseError("Save with update_fields did not affect any rows.")
+                    raise DatabaseError("Save with update_fields did not affect any rows.")           
+            
             if not updated:
-                return super(PolymorphicModel, self)._save_table(raw, cls, force_insert,
-                        force_update, using, update_fields)
+                if meta.order_with_respect_to:
+                    # If this is a model with an order_with_respect_to
+                    # autopopulate the _order field
+                    field = meta.order_with_respect_to
+                    filter_args = field.get_filter_kwargs_for_object(self)
+                    order_value = cls._base_manager.using(using).filter(**filter_args).count()
+                    self._order = order_value
+
+                fields = meta.local_concrete_fields
+                if not pk_set:
+                    fields = [f for f in fields if not isinstance(f, AutoField)]
+
+                update_pk = bool(bool(meta.auto_field) and not pk_set)
+                result = self._do_insert(cls._base_manager, using, fields, update_pk, raw)
+                #
+                if isinstance(result, list):
+                    if len(result) == 1:
+                        result = result[0]                    
+
+                if update_pk:
+                    setattr(self, meta.pk.attname, result)
             return updated
         else:
             return super(PolymorphicModel, self)._save_table(raw, cls, force_insert,
@@ -132,7 +153,7 @@ class PolymorphicModel(with_metaclass(PolymorphicModelBase, models.Model)):
     def save(self, *args, **kwargs):
         """Calls :meth:`pre_save_polymorphic` and saves the model."""
         using = kwargs.get("using", self._state.db or DEFAULT_DB_ALIAS)        
-        self.pre_save_polymorphic(using=using)            
+        self.pre_save_polymorphic(using=using)        
         return super(PolymorphicModel, self).save(*args, **kwargs)
 
     save.alters_data = True
